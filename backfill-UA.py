@@ -1,9 +1,11 @@
+from datetime import date, timedelta
 from googleapiclient.discovery import build
 from oauth2client.service_account import ServiceAccountCredentials
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 import pandas as pd
 import os
+import argparse
 
 # Configuration variables for Google Analytics and BigQuery
 SCOPES = ['https://www.googleapis.com/auth/analytics.readonly']
@@ -23,15 +25,21 @@ def initialize_analyticsreporting():
     analytics = build('analyticsreporting', 'v4', credentials=credentials)
     return analytics
 
-def get_report(analytics):
+def get_report(analytics,ago,days):
+    print("Reference date:", date.today() - timedelta(days=ago))
+    startDate = str(ago)+'daysAgo'
+    endDate = str(ago-days)+'daysAgo'
+    print(f"Downloading from {startDate} to {endDate}")
+
     """Fetches the report data from Google Analytics."""
     # Here, specify the analytics report request details
-    return analytics.reports().batchGet(
+    print(f"Request first page")
+    request = analytics.reports().batchGet(
         body={
             'reportRequests': [
                 {
                     'viewId': VIEW_ID,
-                    'dateRanges': [{'startDate': '365daysAgo', 'endDate': 'today'}],
+                    'dateRanges': [{'startDate': startDate, 'endDate': endDate}],
                     # Metrics and dimensions are specified here
                     'metrics': [
                         {'expression': 'ga:sessions'},
@@ -45,20 +53,73 @@ def get_report(analytics):
                         # Add or remove metrics as per your requirements
                     ],
                     'dimensions': [
+                        {'name': 'ga:date'},
                         {'name': 'ga:country'},
-                        {'name': 'ga:pageTitle'},
-                        {'name': 'ga:browser'},
+#                        {'name': 'ga:pageTitle'},
+#                        {'name': 'ga:browser'},
                         {'name': 'ga:channelGrouping'},
                         {'name': 'ga:source'},
                         {'name': 'ga:pagePath'},
                         {'name': 'ga:deviceCategory'},
+                        {'name': 'ga:contentGroup1'},
+                        {'name': 'ga:contentGroup2'},
                         # Add or remove dimensions as per your requirements
                     ],
-                    'pageSize': 20000  # Adjust the pageSize as needed
+                    'pageSize': 100000  # Adjust the pageSize as needed
                 }
             ]
         }
-    ).execute()
+    )
+    
+    response = request.execute()
+
+    print(f"Number of row in response: {response['reports'][0]['data']['rowCount']}")
+    total_response = response
+
+    while 'nextPageToken' in response.get('reports')[0]:
+        next_page_token = response['reports'][0]['nextPageToken']
+        print(f"Request other page")
+        request = analytics.reports().batchGet(
+            body={
+                'reportRequests': [
+                    {
+                        'viewId': VIEW_ID,
+                        'dateRanges': [{'startDate': startDate, 'endDate': endDate}],
+                        # Metrics and dimensions are specified here
+                        'metrics': [
+                            {'expression': 'ga:sessions'},
+                            {'expression': 'ga:pageviews'},
+                            {'expression': 'ga:users'},
+                            {'expression': 'ga:newUsers'},
+                            {'expression': 'ga:bounceRate'},
+                            {'expression': 'ga:sessionDuration'},
+                            {'expression': 'ga:avgSessionDuration'},
+                            {'expression': 'ga:pageviewsPerSession'},
+                            # Add or remove metrics as per your requirements
+                        ],
+                        'dimensions': [
+                            {'name': 'ga:date'},
+                            {'name': 'ga:country'},
+    #                        {'name': 'ga:pageTitle'},
+    #                        {'name': 'ga:browser'},
+                            {'name': 'ga:channelGrouping'},
+                            {'name': 'ga:source'},
+                            {'name': 'ga:pagePath'},
+                            {'name': 'ga:deviceCategory'},
+                            {'name': 'ga:contentGroup1'},
+                            {'name': 'ga:contentGroup2'},
+                            # Add or remove dimensions as per your requirements
+                        ],
+                        'pageSize': 100000, # Adjust the pageSize as needed
+                        'pageToken': next_page_token
+                    }
+                ]
+            }
+        )
+
+        response = request.execute()
+        total_response['reports'].append(response['reports'][0])
+    return total_response
 
 def response_to_dataframe(response):
     """Converts the API response into a pandas DataFrame."""
@@ -124,11 +185,24 @@ def upload_to_bigquery(df, project_id, dataset_id, table_id):
 
 def main():
     """Main function to execute the script."""
+    # Configurar los argumentos de línea de comandos
+    parser = argparse.ArgumentParser(description='Obtener reporte de Google Analytics')
+    parser.add_argument('startDate', type=str, help='Days Ago')
+    parser.add_argument('days', type=str, help='number of days')
+    args = parser.parse_args()
+
+    startDate = int(args.startDate)
+
     try:
         analytics = initialize_analyticsreporting()
-        response = get_report(analytics)
-        df = response_to_dataframe(response)
-        upload_to_bigquery(df, BIGQUERY_PROJECT, BIGQUERY_DATASET, BIGQUERY_TABLE)
+        # dayloop
+        for i in range(int(args.days)):
+            response = get_report(analytics,startDate,0)
+            df = response_to_dataframe(response)
+            upload_to_bigquery(df, BIGQUERY_PROJECT, BIGQUERY_DATASET, BIGQUERY_TABLE)
+            startDate-=1
+
+
     except Exception as e:
         # Handling exceptions and printing error messages
         print(f"Error occurred: {e}")
